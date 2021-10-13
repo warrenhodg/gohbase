@@ -497,6 +497,10 @@ func (c *client) receive() (err error) {
 		return ServerError{err}
 	}
 
+	if ns, ok := rpc.(hrpc.NotificationSender); ok {
+		ns.AfterReceive()
+	}
+
 	select {
 	case <-rpc.Context().Done():
 		// context has expired, don't bother deserializing
@@ -610,14 +614,17 @@ func (c *client) sendHello() error {
 
 // send sends an RPC out to the wire.
 // Returns the response (for now, as the call is synchronous).
-func (c *client) send(rpc hrpc.Call) (uint32, error) {
-	var err error
+func (c *client) send(rpc hrpc.Call) (result uint32, err error) {
 	var request proto.Message
 	var cellblocks net.Buffers
 	var cellblocksLen uint32
 	header := &pb.RequestHeader{
 		MethodName:   proto.String(rpc.Name()),
 		RequestParam: proto.Bool(true),
+	}
+
+	if ns, ok := rpc.(hrpc.NotificationSender); ok {
+		ns.BeforeSend()
 	}
 
 	if s, ok := rpc.(canSerializeCellBlocks); ok && s.CellBlocksEnabled() {

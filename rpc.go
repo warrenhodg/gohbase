@@ -107,10 +107,15 @@ func (c *client) SendRPC(rpc hrpc.Call) (proto.Message, error) {
 	}
 }
 
-func sendBlocking(rc hrpc.RegionClient, rpc hrpc.Call) (hrpc.RPCResult, error) {
+func sendBlocking(rc hrpc.RegionClient, rpc hrpc.Call) (res hrpc.RPCResult, err error) {
 	rc.QueueRPC(rpc)
 
-	var res hrpc.RPCResult
+	if ns, ok := rpc.(hrpc.NotificationSender); ok {
+		defer func() {
+			ns.Done(err)
+		}()
+	}
+
 	// Wait for the response
 	select {
 	case res = <-rpc.ResultChan():
