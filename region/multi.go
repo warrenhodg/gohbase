@@ -313,3 +313,23 @@ func (m *multi) Context() context.Context {
 func (m *multi) Key() []byte {
 	panic("'Key' is not supported for 'Multi'")
 }
+
+func (m *multi) AddNotifier(n hrpc.Notifier) {
+	panic("AddNotifier is not supported for 'Multi'")
+}
+
+func (m *multi) BeginRPC() {
+	for _, c := range m.calls {
+		if n, ok := c.(hrpc.NotificationSender); ok {
+			n.BeginRPC()
+		}
+	}
+}
+
+func (m *multi) EndRPC(err error) {
+	for _, c := range m.calls {
+		if n, ok := c.(hrpc.NotificationSender); ok {
+			n.EndRPC(err)
+		}
+	}
+}
