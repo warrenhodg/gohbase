@@ -14,10 +14,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 	"github.com/tsuna/gohbase/hrpc"
+	"github.com/tsuna/gohbase/observability"
 	"github.com/tsuna/gohbase/region"
 	"github.com/tsuna/gohbase/zk"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -66,7 +69,31 @@ func (c *client) getRegionForRpc(rpc hrpc.Call) (hrpc.RegionInfo, error) {
 	return nil, ErrCannotFindRegion
 }
 
-func (c *client) SendRPC(rpc hrpc.Call) (proto.Message, error) {
+func (c *client) SendRPC(rpc hrpc.Call) (msg proto.Message, err error) {
+	start := time.Now()
+	origCtx := rpc.Context()
+	description := rpc.Description()
+	spCtx, sp := observability.StartSpan(origCtx, description)
+	rpc.SetContext(spCtx)
+	defer func() {
+		result := "ok"
+		if err != nil {
+			result = "error"
+			sp.SetStatus(codes.Error, err.Error())
+		}
+
+		o := operationDurationSeconds.With(prometheus.Labels{
+			"operation": description,
+			"result":    result,
+		})
+
+		observability.ObserveWithTrace(spCtx, o, time.Since(start).Seconds())
+		sp.End()
+
+		rpc.SetContext(origCtx)
+	}()
+
+	sp.AddEvent("getRegionForRpc")
 	reg, err := c.getRegionForRpc(rpc)
 	if err != nil {
 		return nil, err
@@ -74,9 +101,11 @@ func (c *client) SendRPC(rpc hrpc.Call) (proto.Message, error) {
 
 	backoff := backoffStart
 	for {
+		sp.AddEvent("sendRPCToRegion")
 		msg, err := c.sendRPCToRegion(rpc, reg)
 		switch err.(type) {
 		case region.RetryableError:
+			sp.AddEvent("retrySleep")
 			backoff, err = sleepAndIncreaseBackoff(rpc.Context(), backoff)
 			if err != nil {
 				return msg, err
