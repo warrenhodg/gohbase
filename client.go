@@ -260,7 +260,7 @@ func (c *client) Increment(i *hrpc.Mutate) (int64, error) {
 	return int64(val), nil
 }
 
-func (c *client) mutate(m *hrpc.Mutate) (*hrpc.Result, error) {
+func (c *client) mutate(m *hrpc.Mutate) (res *hrpc.Result, err error) {
 	pbmsg, err := c.SendRPC(m)
 	if err != nil {
 		return nil, err
