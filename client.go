@@ -11,12 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 	"github.com/tsuna/gohbase/compression"
 	"github.com/tsuna/gohbase/hrpc"
+	"github.com/tsuna/gohbase/observability"
 	"github.com/tsuna/gohbase/pb"
 	"github.com/tsuna/gohbase/region"
 	"github.com/tsuna/gohbase/zk"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/proto"
 	"modernc.org/b"
 )
@@ -260,7 +263,31 @@ func (c *client) Increment(i *hrpc.Mutate) (int64, error) {
 	return int64(val), nil
 }
 
-func (c *client) mutate(m *hrpc.Mutate) (*hrpc.Result, error) {
+func (c *client) mutate(m *hrpc.Mutate) (res *hrpc.Result, err error) {
+	start := time.Now()
+	spCtx, sp := observability.StartSpan(m.Context(), "mutate")
+	defer func() {
+		result := "ok"
+		if err != nil {
+			result = "error"
+		}
+		o := operationDurationSeconds.With(prometheus.Labels{
+			"operation": m.MutationType(),
+			"result":    result,
+		})
+
+		observability.ObserveWithTrace(
+			spCtx,
+			o,
+			time.Since(start).Seconds(),
+		)
+
+		if err != nil {
+			sp.SetStatus(codes.Error, err.Error())
+		}
+		sp.End()
+	}()
+
 	pbmsg, err := c.SendRPC(m)
 	if err != nil {
 		return nil, err

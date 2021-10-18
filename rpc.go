@@ -16,8 +16,10 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/tsuna/gohbase/hrpc"
+	"github.com/tsuna/gohbase/observability"
 	"github.com/tsuna/gohbase/region"
 	"github.com/tsuna/gohbase/zk"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -66,7 +68,19 @@ func (c *client) getRegionForRpc(rpc hrpc.Call) (hrpc.RegionInfo, error) {
 	return nil, ErrCannotFindRegion
 }
 
-func (c *client) SendRPC(rpc hrpc.Call) (proto.Message, error) {
+func (c *client) SendRPC(rpc hrpc.Call) (msg proto.Message, err error) {
+	ctx := rpc.Context()
+	spCtx, sp := observability.StartSpan(ctx, "SendRPC")
+	rpc.SetContext(spCtx)
+	defer func() {
+		if err != nil {
+			sp.SetStatus(codes.Error, err.Error())
+		}
+		sp.End()
+		rpc.SetContext(ctx)
+	}()
+
+	sp.AddEvent("getRegionForRpc")
 	reg, err := c.getRegionForRpc(rpc)
 	if err != nil {
 		return nil, err
@@ -74,9 +88,11 @@ func (c *client) SendRPC(rpc hrpc.Call) (proto.Message, error) {
 
 	backoff := backoffStart
 	for {
+		sp.AddEvent("sendRPCToRegion")
 		msg, err := c.sendRPCToRegion(rpc, reg)
 		switch err.(type) {
 		case region.RetryableError:
+			sp.AddEvent("retrySleep")
 			backoff, err = sleepAndIncreaseBackoff(rpc.Context(), backoff)
 			if err != nil {
 				return msg, err
