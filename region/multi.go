@@ -10,9 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/tsuna/gohbase/hrpc"
 	"github.com/tsuna/gohbase/pb"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -30,14 +33,17 @@ func freeMulti(m *multi) {
 }
 
 type multi struct {
+	ctx   context.Context
 	size  int
 	calls []hrpc.Call
 	// regions preserves the order of regions to match against RegionActionResults
 	regions []hrpc.RegionInfo
+	start   time.Time // time when first call was added to this object
 }
 
-func newMulti(queueSize int) *multi {
+func newMulti(ctx context.Context, queueSize int) *multi {
 	m := multiPool.Get().(*multi)
+	m.ctx = ctx
 	m.size = queueSize
 	return m
 }
@@ -45,6 +51,11 @@ func newMulti(queueSize int) *multi {
 // Name returns the name of this RPC call.
 func (m *multi) Name() string {
 	return "Multi"
+}
+
+// Description returns the description of this RPC call.
+func (m *multi) Description() string {
+	return m.Name()
 }
 
 // ToProto converts all request in multi batch to a protobuf message.
@@ -265,6 +276,20 @@ func (m *multi) returnResults(msg proto.Message, err error) {
 
 // add adds the call and returns wether the batch is full.
 func (m *multi) add(call hrpc.Call) bool {
+	if len(m.calls) == 0 {
+		m.start = time.Now()
+	}
+
+	msp := trace.SpanFromContext(m.Context())
+	if msp.IsRecording() {
+		csp := trace.SpanContextFromContext(call.Context())
+		if csp.HasTraceID() {
+			msp.AddEvent("enqueue", trace.WithAttributes(
+				attribute.String("traceid", csp.TraceID().String()),
+			))
+		}
+	}
+
 	m.calls = append(m.calls, call)
 	return len(m.calls) == m.size
 }
@@ -306,10 +331,43 @@ func (m *multi) ResultChan() chan hrpc.RPCResult {
 // Context is not supported for Multi.
 func (m *multi) Context() context.Context {
 	// TODO: maybe pick the one with the longest deadline and use a context that has that deadline?
-	return context.Background()
+	return m.ctx
+}
+
+// String returns a description of this call
+func (m *multi) String() string {
+	return "MULTI"
+}
+
+// SetContext is used for tracing implementations
+func (m *multi) SetContext(ctx context.Context) {
+	m.ctx = ctx
 }
 
 // Key is not supported for Multi RPC.
 func (m *multi) Key() []byte {
 	panic("'Key' is not supported for 'Multi'")
+}
+
+// callsLinks returns a list of linked traces
+// for the calls it represents
+func (m *multi) callsLinks() []trace.Link {
+	links := make([]trace.Link, 0, len(m.calls))
+
+	for _, c := range m.calls {
+		link := trace.LinkFromContext(c.Context())
+		links = append(links, link)
+	}
+
+	return links
+}
+
+// addSendEventsToCallSpans adds a send event
+// to each of the calls represented. This
+// will run when they are actually sent
+func (m *multi) addSendEventsToCallSpans() {
+	for _, c := range m.calls {
+		sp := trace.SpanFromContext(c.Context())
+		sp.AddEvent("send")
+	}
 }
